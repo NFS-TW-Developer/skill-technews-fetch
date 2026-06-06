@@ -1,5 +1,6 @@
 ---
 name: technews-fetch
+category: research
 description: >-
   TechNews 科技新報文章抓取與分類頁爬取。Use when the user wants to
   scrape `technews.tw`, collect article lists by category, fetch full article
