@@ -22,6 +22,7 @@ description: >-
 
 - SKILL / agent：理解使用者需求，先決定應該抓哪些分類
 - `scripts/fetch_technews.py`：接收明確分類後執行抓取與輸出
+- `scripts/render_news_collage.py`：將多篇已選文章合成社群新聞圖卡 PNG
 
 ## 適用情境
 
@@ -164,12 +165,53 @@ python scripts/fetch_technews.py --input-file <list-json-or-csv> --hydrate-conte
 - 先抓列表，再補前幾篇正文
 - 只想對人工挑選後的文章補抓內容
 - 想降低重複抓分類頁的成本
+- 想把已選文章轉成可分享的摘要圖卡
 
 若要先挑文章再補抓，可搭配：
 
 - `--filter-keyword <keyword>`：只保留標題、內容或連結含關鍵字的列；可重複傳入多個關鍵字
 - `--sort-by-date newest|oldest`：先排序再套用 `--limit`
 - `--select-links-file <txt-file>`：只補抓指定 URL 清單中的文章
+
+### 1.7 將已選文章輸出成社群新聞圖卡
+
+若使用者已經選好多篇文章，並希望合成一張可分享的社群新聞圖卡，應使用獨立指令，不要把圖卡邏輯塞進抓取腳本。
+
+可使用：
+
+```bash
+python scripts/render_news_collage.py --input-file <hydrated-json-or-csv> --output-dir outputs/news-collage --articles-per-card 4 --card-title "06/01~06/02 要點"
+```
+
+適合情境：
+
+- 已補抓正文，想把 4 篇文章整理成一張社群圖卡
+- 想重複調整社群版型，但不想重抓資料
+- 想將人工挑選過的文章製作成固定版型 PNG 快訊卡
+- 想由 SKILL 傳入自訂圖卡標題，例如 `06/01~06/02 要點`
+
+建議流程：
+
+1. 先用 `fetch_technews.py` 抓列表
+2. 用 `--select-links-file`、`--filter-keyword` 或 `--limit` 選出文章
+3. 用 `--hydrate-content` 補抓全文
+4. 再交給 `render_news_collage.py` 產生 PNG
+
+字型要求：
+
+- 優先使用支援中文的 Windows 字型
+- 若有指定支援 CNS 11643 的字型，優先透過 `--font-path` 傳入
+- 若未指定，腳本會優先嘗試 `msjh.ttc`、`msjhl.ttc`、`kaiu.ttf`、`mingliu.ttc`
+
+圖像要求：
+
+- 若文章列中有 `image` 欄位，圖卡應優先使用該封面圖作為各欄主視覺
+- 圖卡採 `16:9` 橫式，建議固定 `4` 篇並使用 `上 1 下 3` 版型
+- 文字應放在圖片下方的獨立區域，不應直接壓在封面圖上
+- 主圖標題應較大，下排三張副卡應維持一致的圖文比例與較短標題行數
+- 無 `--card-title` 時，版面應使用更緊湊的頂部留白以善用空間
+- 若沒有封面圖或下載失敗，才退回預設漸層背景
+- 預設不顯示圖卡大標；若使用者或 SKILL 傳入 `--card-title`，才顯示自訂標題
 
 ### 2. 解析分類頁文章列表
 

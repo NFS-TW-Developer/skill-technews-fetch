@@ -26,6 +26,7 @@
 - 分類抓取時直接抓全文：`--include-content`
 - 從既有 JSON / CSV 列表補抓正文：`--input-file --hydrate-content`
 - 補正文前先篩選：`--filter-keyword`、`--sort-by-date`、`--select-links-file`
+- 多篇文章輸出社群新聞圖卡：`scripts/render_news_collage.py`
 - 摘要輸出：`--summary`
 - 輸出格式：`json` / `csv`
 
@@ -33,6 +34,7 @@
 
 ```bash
 pip install requests beautifulsoup4
+pip install Pillow
 ```
 
 ## 常用流程
@@ -74,6 +76,29 @@ python scripts/fetch_technews.py --input-file outputs/technews-ai-list.json --hy
 python scripts/fetch_technews.py --input-file outputs/technews-ai-list.json --filter-keyword AI --sort-by-date newest --limit 3 --hydrate-content --output outputs/technews-ai-filtered-top3.json
 ```
 
+### 7. 選定文章後輸出社群新聞圖卡
+
+先用 `--select-links-file` 或 `--limit` 產出已補正文的文章清單，再轉成 16:9 橫式社群新聞圖卡。目前建議固定使用 `4` 篇文章，版型為 `上 1 下 3`。預設不放圖卡大標；若要顯示像 `06/01~06/02 要點` 這種標題，可用 `--card-title` 傳入。若文章資料有 `image` 欄位，圖卡會優先使用該封面圖作為各欄主視覺：
+
+```bash
+python scripts/fetch_technews.py --input-file outputs/technews-ai-list.json --select-links-file selected-links.txt --hydrate-content --output outputs/technews-ai-selected.json
+python scripts/render_news_collage.py --input-file outputs/technews-ai-selected.json --output-dir outputs/news-collage --articles-per-card 4 --card-title "06/01~06/02 要點"
+```
+
+預設會優先使用 Windows 內建可顯示中文的字型，例如 `msjh.ttc`。若要指定其他支援 CNS 11643 的字型，可加：
+
+```bash
+python scripts/render_news_collage.py --input-file outputs/technews-ai-selected.json --output-dir outputs/news-collage --articles-per-card 4 --card-title "06/01~06/02 要點" --font-path C:/path/to/font.ttc
+```
+
+目前圖卡行為：
+
+- 建議使用 `4` 篇文章；這是目前最穩定也最適合長中文標題的上限
+- 版型採 `上 1 下 3`，上方為主圖，下方三張副卡等寬排列
+- 文字放在圖片下方的獨立區域，不直接壓在圖片上
+- 若不傳 `--card-title`，會自動使用更緊湊的頂部留白
+- 目前不顯示日期、頁碼或 footer，版面只保留必要圖文資訊
+
 ## 模糊需求建議流程
 
 像「能源政策」、「供應鏈風險」、「美中科技戰」這類需求，不要直接依賴單一 `--topic`。
@@ -113,6 +138,9 @@ python scripts/fetch_technews.py --input-file outputs/technews-ai-list.json --hy
 - `--filter-keyword AI --filter-keyword 電力`：只保留同時命中的列
 - `--sort-by-date newest`：先按日期排序再套用 `--limit`
 - `--select-links-file selected-links.txt`：只補抓指定 URL 清單
+- `scripts/render_news_collage.py --input-file ... --output-dir ... --articles-per-card 4`：把 4 篇已選文章合成一張 PNG 社群新聞圖卡
+- `--card-title "06/01~06/02 要點"`：需要時由 SKILL 或使用者傳入圖卡標題；不傳則不顯示大標
+- 若文章有 `image` 欄位，社群圖卡會優先套用文章封面；沒有則退回內建背景版型
 
 ## 輸出說明
 
@@ -146,3 +174,5 @@ outputs/technews-multi-2-categories-2026-06-01_to_2026-06-07-20260606-184028.jso
 - 支援分類以 `scripts/fetch_technews.py` 內的 `CATEGORY_REGISTRY` 為準
 - `--topic` 仍可用於手動探索，但不建議當成主要決策入口
 - 若要新增或調整分類，請修改 `scripts/fetch_technews.py`
+- 社群圖卡目前為 PNG 輸出，會同步產生 `news_collage_cards.json` 保存每張圖卡的文章清單
+- 文章若附帶封面圖 URL，圖卡會自動下載並裁切成每篇欄位的主視覺背景
