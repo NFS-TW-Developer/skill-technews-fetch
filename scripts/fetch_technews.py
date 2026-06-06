@@ -188,7 +188,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-page", type=int, default=3, help="End page number")
     parser.add_argument(
         "--period",
-        choices=("today", "last-7-days", "last-30-days"),
+        choices=("today", "yesterday", "last-7-days", "last-30-days"),
         default=None,
         help="Relative date range shortcut",
     )
@@ -403,6 +403,9 @@ def resolve_date_range(
     today = date.today()
     if period == "today":
         return today, today
+    if period == "yesterday":
+        yesterday = today - timedelta(days=1)
+        return yesterday, yesterday
     if period == "last-7-days":
         return today - timedelta(days=6), today
     if period == "last-30-days":

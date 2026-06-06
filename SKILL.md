@@ -342,6 +342,7 @@ python scripts/fetch_technews.py --category 能源科技 --category finance/金�
 ### 5. 預設執行策略
 
 - 先抓最近 7 天或使用者指定期間
+- 相對期間可用 `today`、`yesterday`、`last-7-days`、`last-30-days`
 - 先不加 `--include-content`
 - 先抓每個分類 1 至 2 頁驗證訊號品質
 - 若結果過少，再擴大頁數或補更多分類
@@ -413,6 +414,25 @@ python scripts/fetch_technews.py --category 能源科技 --category finance/金�
 - `fintech/cryptocurrency`
 
 這類具體名詞可視情況搭配 `--topic` 做快速探索，但正式抓取仍建議改用明確 `--category`。
+
+### 示例：昨天的文章
+
+使用者需求：
+
+```text
+抓昨天的 AI 文章
+```
+
+建議做法：
+
+- 直接使用 `--period yesterday`
+- 若需要精確控制，仍可改用 `--start-date` 與 `--end-date`
+
+例如：
+
+```bash
+python scripts/fetch_technews.py --category ai --period yesterday --summary --format json
+```
 
 ### 示例：讀取單篇文章內容
 

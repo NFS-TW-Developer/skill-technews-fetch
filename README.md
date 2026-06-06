@@ -21,7 +21,7 @@
 
 - 匯出分類 registry：`--dump-category-registry`
 - 單分類 / 多分類抓取：重複 `--category`
-- 近期日期篩選：`--period today|last-7-days|last-30-days`
+- 近期日期篩選：`--period today|yesterday|last-7-days|last-30-days`
 - 單篇文章讀取：`--article-url`
 - 分類抓取時直接抓全文：`--include-content`
 - 從既有 JSON / CSV 列表補抓正文：`--input-file --hydrate-content`
