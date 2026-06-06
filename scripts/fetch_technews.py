@@ -121,7 +121,46 @@ if callable(stdout_reconfigure):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fetch TechNews category articles")
     parser.add_argument(
+        "--article-url",
+        default=None,
+        help="Read a single TechNews article by URL and print/export its content",
+    )
+    parser.add_argument(
+        "--input-file",
+        default=None,
+        help="Read article rows from an existing JSON or CSV file",
+    )
+    parser.add_argument(
+        "--select-links-file",
+        default=None,
+        help="Read a text file of article URLs and keep only matching rows from --input-file",
+    )
+    parser.add_argument(
+        "--hydrate-content",
+        action="store_true",
+        help="Fetch full content for rows loaded from --input-file",
+    )
+    parser.add_argument(
+        "--filter-keyword",
+        action="append",
+        default=None,
+        help="Keep only rows whose title/content/link contains this keyword; can be repeated",
+    )
+    parser.add_argument(
+        "--sort-by-date",
+        choices=("newest", "oldest"),
+        default=None,
+        help="Sort loaded rows by parsed article date before applying --limit",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit how many rows or articles to process",
+    )
+    parser.add_argument(
         "--category",
+        action="append",
         default=None,
         help="Category slug or subcategory path, e.g. ai or semiconductor/chip/cpu",
     )
@@ -134,6 +173,11 @@ def parse_args() -> argparse.Namespace:
         "--list-categories",
         action="store_true",
         help="List supported category slugs and exit",
+    )
+    parser.add_argument(
+        "--dump-category-registry",
+        action="store_true",
+        help="Print the category registry as JSON and exit",
     )
     parser.add_argument(
         "--show-category-candidates",
@@ -200,6 +244,18 @@ def validate_category(category: str) -> str:
         supported = ", ".join(sorted(CATEGORY_REGISTRY))
         raise SystemExit(f"Unsupported category: {category}. Supported: {supported}")
     return normalized
+
+
+def validate_categories(categories: list[str]) -> list[str]:
+    validated: list[str] = []
+    seen: set[str] = set()
+    for category in categories:
+        normalized = validate_category(category)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        validated.append(normalized)
+    return validated
 
 
 def normalize_topic(topic: str) -> str:
@@ -284,6 +340,20 @@ def print_category_branch(slug: str, depth: int = 0) -> None:
         print_category_branch(child_slug, depth + 1)
 
 
+def dump_category_registry() -> None:
+    rows = []
+    for slug in sorted(CATEGORY_REGISTRY):
+        category = CATEGORY_REGISTRY[slug]
+        rows.append(
+            {
+                "slug": slug,
+                "label": str(category["label"]),
+                "parent": category.get("parent"),
+            }
+        )
+    print(json.dumps(rows, ensure_ascii=False, indent=2))
+
+
 def category_label(category: str) -> str:
     return str(CATEGORY_REGISTRY[category]["label"])
 
@@ -307,6 +377,14 @@ def parse_date_boundary(value: str | None, label: str) -> date | None:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise SystemExit(f"{label} format error, use YYYY-MM-DD: {value}") from exc
+
+
+def ensure_positive_limit(limit: int | None) -> int | None:
+    if limit is None:
+        return None
+    if limit <= 0:
+        raise SystemExit("--limit must be greater than 0")
+    return limit
 
 
 def resolve_date_range(
@@ -365,11 +443,21 @@ def article_in_range(article_date: date | None, start_date: date | None, end_dat
     return True
 
 
-def summarize_rows(rows: list[dict[str, str]], category: str, topic: str | None) -> str:
-    label = category_label(category)
-    title_subject = topic or label
+def summarize_rows(
+    rows: list[dict[str, str]],
+    categories: list[str],
+    topic: str | None,
+) -> str:
+    labels = [category_label(category) for category in categories]
+    if len(categories) == 1:
+        category_line = f"- Category: `{categories[0]}` ({labels[0]})"
+        title_subject = topic or labels[0]
+    else:
+        category_line = f"- Categories: {', '.join(f'`{category}`' for category in categories)}"
+        title_subject = topic or "multiple categories"
+
     lines = [f"## TechNews Digest: {title_subject}", ""]
-    lines.append(f"- Category: `{category}` ({label})")
+    lines.append(category_line)
     lines.append(f"- Articles: {len(rows)}")
     if not rows:
         lines.append("")
@@ -406,6 +494,143 @@ def extract_article_content(link: str) -> str:
         return ""
     paragraphs = [node.get_text(strip=True) for node in page.select("div.indent > p")]
     return "\n".join(text for text in paragraphs if text)
+
+
+def extract_single_article(link: str) -> dict[str, str]:
+    page = fetch_html(link)
+    title = ""
+    meta_title = page.find("meta", {"property": "og:title"})
+    if meta_title is not None:
+        title = meta_title.get("content", "").strip()
+    if not title:
+        title_node = page.find("h1")
+        if title_node is not None:
+            title = title_node.get_text(strip=True)
+
+    meta_image = page.find("meta", {"property": "og:image"})
+    image = meta_image.get("content", "").strip() if meta_image is not None else ""
+
+    author = ""
+    raw_date = ""
+    for span in page.find_all("span", {"class": "body"}):
+        text = span.get_text(strip=True)
+        if not text:
+            continue
+        if not raw_date and "年" in text and "月" in text and "日" in text:
+            raw_date = text
+            continue
+        if not author:
+            author = text
+
+    normalized_date = format_date(raw_date)
+    content = extract_article_content(link)
+    return {
+        "category": "",
+        "postID": "",
+        "title": title,
+        "link": link,
+        "image": image,
+        "date": normalized_date,
+        "author": author,
+        "content": content,
+    }
+
+
+def read_rows_from_json(input_path: Path) -> list[dict[str, str]]:
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise SystemExit(f"JSON input must be a list of article rows: {input_path}")
+    rows: list[dict[str, str]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        rows.append({str(key): "" if value is None else str(value) for key, value in item.items()})
+    return rows
+
+
+def read_rows_from_csv(input_path: Path) -> list[dict[str, str]]:
+    with input_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        return [{str(key): value or "" for key, value in row.items()} for row in reader]
+
+
+def read_input_rows(input_path: Path) -> list[dict[str, str]]:
+    suffix = input_path.suffix.lower()
+    if suffix == ".json":
+        return read_rows_from_json(input_path)
+    if suffix == ".csv":
+        return read_rows_from_csv(input_path)
+    raise SystemExit(f"Unsupported input file format: {input_path}")
+
+
+def read_selected_links(input_path: Path) -> set[str]:
+    links: set[str] = set()
+    for line in input_path.read_text(encoding="utf-8").splitlines():
+        link = line.strip()
+        if not link or link.startswith("#"):
+            continue
+        links.add(link)
+    return links
+
+
+def filter_rows_by_selected_links(rows: list[dict[str, str]], selected_links: set[str]) -> list[dict[str, str]]:
+    if not selected_links:
+        return rows
+    return [row for row in rows if row.get("link", "").strip() in selected_links]
+
+
+def filter_rows_by_keywords(rows: list[dict[str, str]], keywords: list[str] | None) -> list[dict[str, str]]:
+    if not keywords:
+        return rows
+    normalized_keywords = [keyword.strip().lower() for keyword in keywords if keyword.strip()]
+    if not normalized_keywords:
+        return rows
+
+    filtered_rows: list[dict[str, str]] = []
+    for row in rows:
+        haystack = " ".join(
+            [row.get("title", ""), row.get("content", ""), row.get("link", "")]
+        ).lower()
+        if all(keyword in haystack for keyword in normalized_keywords):
+            filtered_rows.append(row)
+    return filtered_rows
+
+
+def sort_rows_by_date(rows: list[dict[str, str]], direction: str | None) -> list[dict[str, str]]:
+    if direction is None:
+        return rows
+
+    def sort_key(row: dict[str, str]) -> tuple[int, datetime]:
+        value = row.get("date", "")
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d %H:%M")
+            return 0, parsed
+        except ValueError:
+            return 1, datetime.min
+
+    reverse = direction == "newest"
+    return sorted(rows, key=sort_key, reverse=reverse)
+
+
+def hydrate_rows_with_content(
+    rows: list[dict[str, str]],
+    min_delay: float,
+    max_delay: float,
+    limit: int | None,
+) -> list[dict[str, str]]:
+    hydrated_rows: list[dict[str, str]] = []
+    selected_rows = rows[:limit] if limit is not None else rows
+    for index, row in enumerate(selected_rows, start=1):
+        hydrated = dict(row)
+        link = hydrated.get("link", "").strip()
+        if link:
+            hydrated["content"] = extract_article_content(link)
+        else:
+            hydrated.setdefault("content", "")
+        hydrated_rows.append(hydrated)
+        print(f"Hydrated article {index}: {hydrated.get('title', '-')}")
+        sleep_briefly(min_delay, max_delay)
+    return hydrated_rows
 
 
 def extract_articles(
@@ -472,13 +697,16 @@ def extract_articles(
 
 
 def default_output_path(
-    category: str,
+    categories: list[str],
     output_format: str,
     start_date: date | None,
     end_date: date | None,
 ) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    safe_category = category_path_to_filename(category)
+    if len(categories) == 1:
+        safe_category = category_path_to_filename(categories[0])
+    else:
+        safe_category = f"multi-{len(categories)}-categories"
     suffix = date_range_suffix(start_date, end_date)
     return Path("outputs") / f"technews-{safe_category}{suffix}-{timestamp}.{output_format}"
 
@@ -499,8 +727,12 @@ def write_csv(output_path: Path, rows: list[dict[str, str]]) -> None:
 
 def main() -> None:
     args = parse_args()
+    limit = ensure_positive_limit(args.limit)
     if args.list_categories:
         print_supported_categories()
+        return
+    if args.dump_category_registry:
+        dump_category_registry()
         return
     if args.show_category_candidates:
         if not args.topic:
@@ -508,15 +740,62 @@ def main() -> None:
         print_topic_candidates(str(args.topic))
         return
 
+    if args.article_url:
+        try:
+            row = extract_single_article(str(args.article_url))
+        except requests.RequestException as exc:
+            raise SystemExit(f"Article fetch failed: {exc}") from exc
+
+        rows = [row]
+        output_path = Path(args.output) if args.output else None
+        if output_path is not None:
+            if args.format == "csv":
+                write_csv(output_path, rows)
+            else:
+                write_json(output_path, rows)
+            print(f"Saved 1 article to {output_path}")
+        else:
+            print(json.dumps(row, ensure_ascii=False, indent=2))
+        return
+
+    if args.input_file:
+        input_path = Path(args.input_file)
+        if not input_path.exists():
+            raise SystemExit(f"Input file not found: {input_path}")
+        rows = read_input_rows(input_path)
+        if args.select_links_file:
+            links_path = Path(args.select_links_file)
+            if not links_path.exists():
+                raise SystemExit(f"Link selection file not found: {links_path}")
+            rows = filter_rows_by_selected_links(rows, read_selected_links(links_path))
+        rows = filter_rows_by_keywords(rows, args.filter_keyword)
+        rows = sort_rows_by_date(rows, args.sort_by_date)
+        if args.hydrate_content:
+            rows = hydrate_rows_with_content(rows, args.min_delay, args.max_delay, limit)
+        elif limit is not None:
+            rows = rows[:limit]
+
+        output_path = Path(args.output) if args.output else None
+        if output_path is not None:
+            if args.format == "csv":
+                write_csv(output_path, rows)
+            else:
+                write_json(output_path, rows)
+            print(f"Saved {len(rows)} articles to {output_path}")
+        else:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+
     if not args.category and not args.topic:
-        raise SystemExit("Use --category or --topic")
+        raise SystemExit("Use --article-url, --input-file, --category, or --topic")
 
     if args.category:
-        category = validate_category(args.category)
+        categories = validate_categories(args.category)
     else:
-        category = validate_category(guess_category_from_topic(str(args.topic)))
+        guessed_category = validate_category(guess_category_from_topic(str(args.topic)))
+        categories = [guessed_category]
         print_topic_candidates(str(args.topic), limit=3)
-        print(f"Guessed category: {category} ({category_label(category)})")
+        print(f"Guessed category: {guessed_category} ({category_label(guessed_category)})")
 
     start_date, end_date = resolve_date_range(args.period, args.start_date, args.end_date)
     if start_date and end_date and start_date > end_date:
@@ -529,36 +808,55 @@ def main() -> None:
         print(f"Date filter: {start_label} to {end_label}")
     print(f"Include content: {'yes' if args.include_content else 'no'}")
 
-    for page_number in range(args.start_page, args.end_page + 1):
-        try:
-            page_rows, saw_older_article = extract_articles(
-                category,
-                page_number,
-                args.min_delay,
-                args.max_delay,
-                start_date,
-                end_date,
-                args.include_content,
-            )
-        except requests.RequestException as exc:
-            print(f"Page fetch failed: {page_number}: {exc}")
-            break
+    for category in categories:
+        print(f"Category: {category} ({category_label(category)})")
+        for page_number in range(args.start_page, args.end_page + 1):
+            try:
+                page_rows, saw_older_article = extract_articles(
+                    category,
+                    page_number,
+                    args.min_delay,
+                    args.max_delay,
+                    start_date,
+                    end_date,
+                    args.include_content,
+                )
+            except requests.RequestException as exc:
+                print(f"Page fetch failed for {category} page {page_number}: {exc}")
+                break
 
-        if not page_rows and not saw_older_article:
-            print(f"No articles found on page {page_number}; stop.")
-            break
+            if not page_rows and not saw_older_article:
+                print(f"No articles found for {category} on page {page_number}; stop.")
+                break
 
-        print(f"Fetched page {page_number}: {len(page_rows)} articles")
-        rows.extend(page_rows)
-        if saw_older_article:
-            print(f"Reached articles older than start_date on page {page_number}; stop.")
-            break
-        sleep_briefly(args.min_delay, args.max_delay)
+            print(f"Fetched {category} page {page_number}: {len(page_rows)} articles")
+            rows.extend(page_rows)
+            if limit is not None and len(rows) >= limit:
+                rows = rows[:limit]
+                print(f"Reached --limit {limit}; stop.")
+                output_path = (
+                    Path(args.output)
+                    if args.output
+                    else default_output_path(categories, args.format, start_date, end_date)
+                )
+                if args.format == "csv":
+                    write_csv(output_path, rows)
+                else:
+                    write_json(output_path, rows)
+                print(f"Saved {len(rows)} articles to {output_path}")
+                if args.summary:
+                    print("")
+                    print(summarize_rows(rows, categories, args.topic))
+                return
+            if saw_older_article:
+                print(f"Reached articles older than start_date for {category} on page {page_number}; stop.")
+                break
+            sleep_briefly(args.min_delay, args.max_delay)
 
     output_path = (
         Path(args.output)
         if args.output
-        else default_output_path(category, args.format, start_date, end_date)
+        else default_output_path(categories, args.format, start_date, end_date)
     )
     if args.format == "csv":
         write_csv(output_path, rows)
@@ -568,7 +866,7 @@ def main() -> None:
     print(f"Saved {len(rows)} articles to {output_path}")
     if args.summary:
         print("")
-        print(summarize_rows(rows, category, args.topic))
+        print(summarize_rows(rows, categories, args.topic))
 
 
 if __name__ == "__main__":

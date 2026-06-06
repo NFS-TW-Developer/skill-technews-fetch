@@ -1,53 +1,122 @@
 # technews-fetch
 
-抓取 `https://technews.tw` 分類頁與文章內容的雛形 skill。
+抓取 `https://technews.tw` 分類頁、單篇文章與文章正文的 TechNews skill。
 
 目前提供：
 
-- `SKILL.md`：skill 定義與抓取策略
-- `scripts/fetch_technews.py`：可執行的初版抓取腳本
-- `references/example-prompts.md`：可直接拿來觸發 skill 的提示範例
+- `SKILL.md`：skill 定義與分類決策規則
+- `scripts/fetch_technews.py`：執行抓取、補正文與輸出
+- `references/example-prompts.md`：可直接觸發 skill 的 prompt 範例
 - `outputs/`：預設輸出目錄
 
-## 目前支援
+## 使用原則
 
-- 指定分類，例如 `ai`
-- 也可只給主題關鍵字，讓程式自動猜一個最適合的分類
-- 自動猜分類時，會同時列出前幾個可用分類候選
-- 支援子分類路徑，例如 `semiconductor/chip/cpu`
-- 內建分類清單以程式碼中的 `CATEGORY_REGISTRY` 維護，可用 `--list-categories` 以樹狀查看
-- 指定起始頁與結束頁
-- 可加上日期區間過濾文章
-- 可用 `--period today|last-7-days|last-30-days` 快速查近期資訊
-- 抓文章列表與文章內文
-- 預設只抓列表欄位，不抓全文；加上 `--include-content` 才抓正文
-- 輸出 JSON 或 CSV
-- 可加 `--summary` 直接輸出簡易摘要
-- 空頁自動停止
-- 會自動處理 category path，像 `semiconductor/chip/cpu` 可直接拿來組 URL
+- SKILL / agent 先判斷要抓哪些分類
+- 腳本負責執行明確分類、單篇文章或既有列表的後續處理
+- 明確需求用 `--category`
+- 模糊需求先用 `--dump-category-registry` 看可用分類，再決定 2 到 5 個 `--category`
+- 預設先抓列表，不先抓全文
 
-## 快速開始
+## 主要能力
+
+- 匯出分類 registry：`--dump-category-registry`
+- 單分類 / 多分類抓取：重複 `--category`
+- 近期日期篩選：`--period today|last-7-days|last-30-days`
+- 單篇文章讀取：`--article-url`
+- 分類抓取時直接抓全文：`--include-content`
+- 從既有 JSON / CSV 列表補抓正文：`--input-file --hydrate-content`
+- 補正文前先篩選：`--filter-keyword`、`--sort-by-date`、`--select-links-file`
+- 摘要輸出：`--summary`
+- 輸出格式：`json` / `csv`
+
+## 安裝
 
 ```bash
 pip install requests beautifulsoup4
-
-python scripts/fetch_technews.py --category ai --start-page 1 --end-page 2 --format json
-python scripts/fetch_technews.py --topic AI --show-category-candidates
-python scripts/fetch_technews.py --category semiconductor --start-page 1 --end-page 2 --format csv
-python scripts/fetch_technews.py --category semiconductor/chip/cpu --start-page 1 --end-page 1 --format json
-python scripts/fetch_technews.py --category ai --start-page 1 --end-page 10 --start-date 2026-06-01 --end-date 2026-06-07 --format json
-python scripts/fetch_technews.py --category ai --start-page 1 --end-page 1 --include-content --format json
-python scripts/fetch_technews.py --topic AI --period last-7-days --summary --format json
-python scripts/fetch_technews.py --category ai --list-categories
 ```
 
-若未指定 `--output`，預設檔名會自動帶入 category path 與日期區間，例如：
+## 常用流程
 
-```text
-outputs/technews-ai-2026-06-01_to_2026-06-07-20260606-184028.json
+### 1. 先看可用分類
+
+```bash
+python scripts/fetch_technews.py --dump-category-registry
 ```
 
-## 輸出欄位
+### 2. 抓單一分類列表
+
+```bash
+python scripts/fetch_technews.py --category ai --period last-7-days --format json --summary
+```
+
+### 3. 抓多個分類
+
+```bash
+python scripts/fetch_technews.py --category 能源科技 --category finance/金融政策 --period last-7-days --format json --summary
+```
+
+### 4. 直接讀單篇文章
+
+```bash
+python scripts/fetch_technews.py --article-url https://technews.tw/2026/06/06/computex-ping-cheng-power-shortage-ai-biggest-challenge-delta-electronics-one-stop-vertical-integration-grid-chip/ --format json
+```
+
+### 5. 先抓列表，再補正文
+
+```bash
+python scripts/fetch_technews.py --category ai --period last-7-days --format json --output outputs/technews-ai-list.json
+python scripts/fetch_technews.py --input-file outputs/technews-ai-list.json --hydrate-content --limit 3 --output outputs/technews-ai-top3-content.json
+```
+
+### 6. 先篩文章，再補正文
+
+```bash
+python scripts/fetch_technews.py --input-file outputs/technews-ai-list.json --filter-keyword AI --sort-by-date newest --limit 3 --hydrate-content --output outputs/technews-ai-filtered-top3.json
+```
+
+## 模糊需求建議流程
+
+像「能源政策」、「供應鏈風險」、「美中科技戰」這類需求，不要直接依賴單一 `--topic`。
+
+推薦做法：
+
+1. 先執行 `--dump-category-registry`
+2. 由 SKILL 選 2 到 5 個相關分類
+3. 先抓最近 7 天或先抓 1 到 2 頁
+4. 看結果是否過少或噪音過高，再調整分類
+5. 需要正文時，再用 `--input-file --hydrate-content` 補抓
+
+例如：`找出本周對於能源政策的相關文章`
+
+先做低成本驗證：
+
+```bash
+python scripts/fetch_technews.py --category 能源科技 --category finance/金融政策 --period last-7-days --summary --format json
+```
+
+如果結果不足，再擴大：
+
+```bash
+python scripts/fetch_technews.py --category 能源科技 --category 能源科技/nuclear --category 能源科技/solar-energy --category 能源科技/wind-power --category 能源科技/電力儲存 --category finance/金融政策 --period last-7-days --summary --format json
+```
+
+## 補正文工作流
+
+若已經有列表檔，可直接從既有資料補抓正文，不必重跑分類頁。
+
+```bash
+python scripts/fetch_technews.py --input-file outputs/technews-ai-list.json --hydrate-content --limit 3 --output outputs/technews-ai-top3-content.json
+```
+
+常用搭配：
+
+- `--filter-keyword AI --filter-keyword 電力`：只保留同時命中的列
+- `--sort-by-date newest`：先按日期排序再套用 `--limit`
+- `--select-links-file selected-links.txt`：只補抓指定 URL 清單
+
+## 輸出說明
+
+輸出欄位：
 
 - `category`
 - `postID`
@@ -58,76 +127,22 @@ outputs/technews-ai-2026-06-01_to_2026-06-07-20260606-184028.json
 - `author`
 - `content`
 
-## 目前分類
+若未指定 `--output`，分類抓取時會自動輸出到 `outputs/`，檔名包含分類與日期區間，例如：
 
-以下為目前收錄方向，實際以 `--list-categories` 輸出與 `CATEGORY_REGISTRY` 為準。
+```text
+outputs/technews-ai-2026-06-01_to_2026-06-07-20260606-184028.json
+```
 
-- `amazon`
-- `ai`
-- `biotech`
-- `biotech/醫療`
-- `ccc`
-- `ccc/accessory`
-- `component`
-- `component/dian-chi`
-- `component/display-c`
-- `component/光電科技`
-- `cutting-edge`
-- `cutting-edge/drone`
-- `cutting-edge/leos`
-- `cutting-edge/奈米`
-- `cutting-edge/材料`
-- `cutting-edge/機器人`
-- `cutting-edge/航太科技`
-- `entertainment`
-- `fb`
-- `finance`
-- `finance/financial_statement`
-- `finance/finance-report`
-- `finance/realestate`
-- `finance/證券`
-- `finance/金融政策`
-- `fintech`
-- `fintech/cryptocurrency`
-- `google`
-- `internet`
-- `internet/開放資料`
-- `internet/電子商務`
-- `internet/雲端`
-- `internet-of-things-internet`
-- `mobiledevice`
-- `natural-science`
-- `natural-science/環境科學`
-- `payment`
-- `semiconductor`
-- `semiconductor/chip`
-- `semiconductor/chip/cpu`
-- `semiconductor/chip/gpu`
-- `semiconductor/chip/memory`
-- `semiconductor/ic-設計`
-- `semiconductor/封裝測試`
-- `semiconductor/晶圓`
-- `tech-life`
-- `transport/car-tech`
-- `國際貿易`
-- `國際貿易/國際金融`
-- `科技教育`
-- `軍事科技`
-- `能源科技`
-- `能源科技/nuclear`
-- `能源科技/solar-energy`
-- `能源科技/wind-power`
-- `能源科技/電力儲存`
+多分類時，預設檔名會像：
 
-## 後續可擴充
+```text
+outputs/technews-multi-2-categories-2026-06-01_to_2026-06-07-20260606-184028.json
+```
 
-- 多分類批次抓取
-- 續抓與去重
-- 輸出 SQLite 或 markdown 摘要
+單篇文章與 `--input-file` 模式若未指定 `--output`，會直接把 JSON 印到 stdout。
 
-註：分類 slug 目前以程式碼維護，並直接採用你提供的值，例如 `國際貿易`。
-若要新增或調整支援分類，請直接修改 `scripts/fetch_technews.py` 內的 `CATEGORY_REGISTRY`。
-輸出檔名則會把 `/` 轉成 `-`，避免路徑被誤判成資料夾。
-若只給 `--topic`，程式會根據 `CATEGORY_REGISTRY` 的 category path 與顯示名稱自動猜一個最適合的分類，並列出前幾個候選。
-若指定 `--summary`，抓取完成後會直接列出簡短 digest 與前 10 筆標題。
-若有指定 `--start-date` / `--end-date`，預設檔名也會附上日期區間。
+## 備註
+
+- 支援分類以 `scripts/fetch_technews.py` 內的 `CATEGORY_REGISTRY` 為準
+- `--topic` 仍可用於手動探索，但不建議當成主要決策入口
+- 若要新增或調整分類，請修改 `scripts/fetch_technews.py`
